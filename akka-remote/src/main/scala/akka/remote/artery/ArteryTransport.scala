@@ -80,11 +80,11 @@ import akka.remote.RemotingListenEvent
  */
 private[akka] object InboundEnvelope {
   def apply(
-    recipient:        InternalActorRef,
+    recipient: InternalActorRef,
     recipientAddress: Address,
-    message:          AnyRef,
-    senderOption:     OptionVal[ActorRef],
-    originUid:        Long): InboundEnvelope = {
+    message: AnyRef,
+    senderOption: OptionVal[ActorRef],
+    originUid: Long): InboundEnvelope = {
     val env = new ReusableInboundEnvelope
     env.init(recipient, recipientAddress, message, senderOption, originUid)
     env
@@ -135,11 +135,11 @@ private[akka] final class ReusableInboundEnvelope extends InboundEnvelope {
   }
 
   def init(
-    recipient:        InternalActorRef,
+    recipient: InternalActorRef,
     recipientAddress: Address,
-    message:          AnyRef,
-    senderOption:     OptionVal[ActorRef],
-    originUid:        Long): Unit = {
+    message: AnyRef,
+    senderOption: OptionVal[ActorRef],
+    originUid: Long): Unit = {
     _recipient = recipient
     _recipientAddress = recipientAddress
     _message = message
@@ -229,9 +229,9 @@ private[akka] object AssociationState {
  * INTERNAL API
  */
 private[akka] final class AssociationState(
-  val incarnation:                Int,
+  val incarnation: Int,
   val uniqueRemoteAddressPromise: Promise[UniqueAddress],
-  val quarantined:                AssociationState.QuarantinedUidSet) {
+  val quarantined: AssociationState.QuarantinedUidSet) {
 
   // doesn't have to be volatile since it's only a cache changed once
   private var uniqueRemoteAddressValueCache: Option[UniqueAddress] = null
@@ -626,6 +626,7 @@ private[remote] class ArteryTransport(_system: ExtendedActorSystem, _provider: R
     else {
       try {
         _shutdown = true
+        // FIXME do we need to flush any messages that are in flight?
         killSwitch.shutdown()
         topLevelFREvents.loFreq(Transport_KillSwitchPulled, NoMetaData)
         if (taskRunner != null) {
@@ -725,7 +726,8 @@ private[remote] class ArteryTransport(_system: ExtendedActorSystem, _provider: R
   def outboundControl(outboundContext: OutboundContext): Sink[Send, (OutboundControlIngress, Future[Done])] = {
     Flow.fromGraph(killSwitch.flow[Send])
       .via(new OutboundHandshake(outboundContext, handshakeTimeout, handshakeRetryInterval, injectHandshakeInterval))
-      .via(new SystemMessageDelivery(outboundContext, systemMessageResendInterval, remoteSettings.SysMsgBufferSize))
+      .via(new SystemMessageDelivery(outboundContext, system.deadLetters, systemMessageResendInterval,
+        remoteSettings.SysMsgBufferSize))
       .viaMat(new OutboundControlJunction(outboundContext))(Keep.right)
       .via(encoder)
       .toMat(new AeronSink(outboundChannel(outboundContext.remoteAddress), controlStreamId, aeron, taskRunner,
