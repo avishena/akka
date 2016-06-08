@@ -8,16 +8,13 @@ import java.net.InetSocketAddress
 import java.nio.channels.DatagramChannel
 import java.util.concurrent.CopyOnWriteArrayList
 import java.util.concurrent.atomic.AtomicLong
-
 import scala.collection.JavaConverters._
-
 import scala.concurrent.Future
 import scala.concurrent.Promise
 import scala.concurrent.duration._
 import scala.util.Failure
 import scala.util.Success
 import scala.util.Try
-
 import akka.Done
 import akka.NotUsed
 import akka.actor.ActorRef
@@ -67,17 +64,16 @@ import org.agrona.IoUtil
 import java.io.File
 import java.net.InetSocketAddress
 import java.nio.channels.{ DatagramChannel, FileChannel }
-
 import akka.remote.artery.OutboundControlJunction.OutboundControlIngress
 import io.aeron.CncFileDescriptor
 import java.util.concurrent.atomic.AtomicLong
-
 import akka.actor.Cancellable
-
 import scala.collection.JavaConverters._
 import akka.stream.ActorMaterializerSettings
 import scala.annotation.tailrec
 import akka.util.OptionVal
+import akka.remote.RemotingShutdownEvent
+import akka.remote.RemotingListenEvent
 
 /**
  * INTERNAL API
@@ -347,7 +343,7 @@ private[remote] class ArteryTransport(_system: ExtendedActorSystem, _provider: R
   override def addresses: Set[Address] = _addresses
   override def localAddressForRemote(remote: Address): Address = defaultAddress
   override val log: LoggingAdapter = Logging(system, getClass.getName)
-  private val eventPublisher = new EventPublisher(system, log, remoteSettings.RemoteLifecycleEventsLogLevel)
+  val eventPublisher = new EventPublisher(system, log, remoteSettings.RemoteLifecycleEventsLogLevel)
 
   private val codec: AkkaPduCodec = AkkaPduProtobufCodec
   private val killSwitch: SharedKillSwitch = KillSwitches.shared("transportKillSwitch")
@@ -437,6 +433,7 @@ private[remote] class ArteryTransport(_system: ExtendedActorSystem, _provider: R
     runInboundStreams()
     topLevelFREvents.loFreq(Transport_StartupFinished, NoMetaData)
 
+    eventPublisher.notifyListeners(RemotingListenEvent(addresses))
     log.info("Remoting started; listening on address: {}", defaultAddress)
   }
 
@@ -623,34 +620,41 @@ private[remote] class ArteryTransport(_system: ExtendedActorSystem, _provider: R
     }
   }
 
-  override def shutdown(): Future[Done] = {
-    _shutdown = true
-    killSwitch.shutdown()
-    topLevelFREvents.loFreq(Transport_KillSwitchPulled, NoMetaData)
-    if (taskRunner != null) {
-      taskRunner.stop()
-      topLevelFREvents.loFreq(Transport_Stopped, NoMetaData)
+  override def shutdown(): Future[Done] =
+    if (_shutdown)
+      Future.successful(Done)
+    else {
+      try {
+        _shutdown = true
+        killSwitch.shutdown()
+        topLevelFREvents.loFreq(Transport_KillSwitchPulled, NoMetaData)
+        if (taskRunner != null) {
+          taskRunner.stop()
+          topLevelFREvents.loFreq(Transport_Stopped, NoMetaData)
+        }
+        if (aeronErrorLogTask != null) {
+          aeronErrorLogTask.cancel()
+          topLevelFREvents.loFreq(Transport_AeronErrorLogTaskStopped, NoMetaData)
+        }
+        if (aeron != null) aeron.close()
+        mediaDriver.foreach { driver ⇒
+          // this is only for embedded media driver
+          driver.close()
+          // FIXME it should also be configurable to not delete dir
+          IoUtil.delete(new File(driver.aeronDirectoryName), true)
+          topLevelFREvents.loFreq(Transport_MediaFileDeleted, NoMetaData)
+        }
+        topLevelFREvents.loFreq(Transport_FlightRecorderClose, NoMetaData)
+        flightRecorder.close()
+        afrFileChannel.force(true)
+        afrFileChannel.close()
+        // TODO: Be smarter about this in tests and make it always-on-for prod
+        afrFlie.delete()
+      } finally {
+        eventPublisher.notifyListeners(RemotingShutdownEvent)
+      }
+      Future.successful(Done)
     }
-    if (aeronErrorLogTask != null) {
-      aeronErrorLogTask.cancel()
-      topLevelFREvents.loFreq(Transport_AeronErrorLogTaskStopped, NoMetaData)
-    }
-    if (aeron != null) aeron.close()
-    mediaDriver.foreach { driver ⇒
-      // this is only for embedded media driver
-      driver.close()
-      // FIXME it should also be configurable to not delete dir
-      IoUtil.delete(new File(driver.aeronDirectoryName), true)
-      topLevelFREvents.loFreq(Transport_MediaFileDeleted, NoMetaData)
-    }
-    topLevelFREvents.loFreq(Transport_FlightRecorderClose, NoMetaData)
-    flightRecorder.close()
-    afrFileChannel.force(true)
-    afrFileChannel.close()
-    // TODO: Be smarter about this in tests and make it always-on-for prod
-    afrFlie.delete()
-    Future.successful(Done)
-  }
 
   private[remote] def isShutdown(): Boolean = _shutdown
 
