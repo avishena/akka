@@ -11,6 +11,7 @@ import akka.serialization.{ Serialization, SerializationExtension }
 import akka.stream._
 import akka.stream.stage.{ GraphStage, GraphStageLogic, InHandler, OutHandler }
 import akka.util.OptionVal
+import akka.remote.RemoteMetricsExtension
 
 // TODO: Long UID
 class Encoder(
@@ -33,6 +34,7 @@ class Encoder(
       private val localAddress = uniqueLocalAddress.address
       private val serialization = SerializationExtension(system)
       private val serializationInfo = Serialization.Information(localAddress, system)
+      private val remoteMetrics = RemoteMetricsExtension(system)
 
       private val senderCache = new java.util.HashMap[ActorRef, String]
       private var recipientCache = new java.util.HashMap[ActorRef, String]
@@ -81,6 +83,9 @@ class Encoder(
             Serialization.currentTransportInformation.value = oldValue
 
           envelope.byteBuffer.flip()
+
+          remoteMetrics.logPayloadBytes(send.message, envelope.byteBuffer.remaining)
+
           push(out, envelope)
 
         } catch {
