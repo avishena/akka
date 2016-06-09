@@ -84,13 +84,13 @@ import akka.util.OptionVal
  */
 private[akka] object InboundEnvelope {
   def apply(
-    recipient:        InternalActorRef,
+    recipient:        OptionVal[InternalActorRef],
     recipientAddress: Address,
     message:          AnyRef,
-    senderOption:     OptionVal[ActorRef],
+    sender:           OptionVal[ActorRef],
     originUid:        Long): InboundEnvelope = {
     val env = new ReusableInboundEnvelope
-    env.init(recipient, recipientAddress, message, senderOption, originUid)
+    env.init(recipient, recipientAddress, message, sender, originUid)
     env
   }
 
@@ -100,29 +100,31 @@ private[akka] object InboundEnvelope {
  * INTERNAL API
  */
 private[akka] trait InboundEnvelope {
-  def recipient: InternalActorRef
+  def recipient: OptionVal[InternalActorRef]
   def recipientAddress: Address
   def message: AnyRef
-  def senderOption: OptionVal[ActorRef]
+  def sender: OptionVal[ActorRef]
   def originUid: Long
 
   def withMessage(message: AnyRef): InboundEnvelope
+
+  def withRecipient(ref: InternalActorRef): InboundEnvelope
 }
 
 /**
  * INTERNAL API
  */
 private[akka] final class ReusableInboundEnvelope extends InboundEnvelope {
-  private var _recipient: InternalActorRef = null
+  private var _recipient: OptionVal[InternalActorRef] = OptionVal.None
   private var _recipientAddress: Address = null
   private var _message: AnyRef = null
-  private var _senderOption: OptionVal[ActorRef] = OptionVal.None
+  private var _sender: OptionVal[ActorRef] = OptionVal.None
   private var _originUid: Long = 0L
 
-  override def recipient: InternalActorRef = _recipient
+  override def recipient: OptionVal[InternalActorRef] = _recipient
   override def recipientAddress: Address = _recipientAddress
   override def message: AnyRef = _message
-  override def senderOption: OptionVal[ActorRef] = _senderOption
+  override def sender: OptionVal[ActorRef] = _sender
   override def originUid: Long = _originUid
 
   override def withMessage(message: AnyRef): InboundEnvelope = {
@@ -130,29 +132,34 @@ private[akka] final class ReusableInboundEnvelope extends InboundEnvelope {
     this
   }
 
+  def withRecipient(ref: InternalActorRef): InboundEnvelope = {
+    _recipient = OptionVal(ref)
+    this
+  }
+
   def clear(): Unit = {
-    _recipient = null
+    _recipient = OptionVal.None
     _recipientAddress = null
     _message = null
-    _senderOption = OptionVal.None
+    _sender = OptionVal.None
     _originUid = 0L
   }
 
   def init(
-    recipient:        InternalActorRef,
+    recipient:        OptionVal[InternalActorRef],
     recipientAddress: Address,
     message:          AnyRef,
-    senderOption:     OptionVal[ActorRef],
+    sender:           OptionVal[ActorRef],
     originUid:        Long): Unit = {
     _recipient = recipient
     _recipientAddress = recipientAddress
     _message = message
-    _senderOption = senderOption
+    _sender = sender
     _originUid = originUid
   }
 
   override def toString: String =
-    s"InboundEnvelope($recipient, $recipientAddress, $message, $senderOption, $originUid)"
+    s"InboundEnvelope($recipient, $recipientAddress, $message, $sender, $originUid)"
 }
 
 /**
@@ -669,7 +676,7 @@ private[remote] class ArteryTransport(_system: ExtendedActorSystem, _provider: R
   override def sendControl(to: Address, message: ControlMessage) =
     association(to).sendControl(message)
 
-  override def send(message: Any, senderOption: OptionVal[ActorRef], recipient: RemoteActorRef): Unit = {
+  override def send(message: Any, sender: OptionVal[ActorRef], recipient: RemoteActorRef): Unit = {
     val cached = recipient.cachedAssociation
 
     val a =
@@ -680,7 +687,7 @@ private[remote] class ArteryTransport(_system: ExtendedActorSystem, _provider: R
         a2
       }
 
-    a.send(message, senderOption, recipient)
+    a.send(message, sender, recipient)
   }
 
   override def association(remoteAddress: Address): Association =
@@ -740,7 +747,7 @@ private[remote] class ArteryTransport(_system: ExtendedActorSystem, _provider: R
       flightRecorder.createEventSink()))
 
   val messageDispatcherSink: Sink[InboundEnvelope, Future[Done]] = Sink.foreach[InboundEnvelope] { m ⇒
-    messageDispatcher.dispatch(m.recipient, m.recipientAddress, m.message, m.senderOption)
+    messageDispatcher.dispatch(m.recipient.get, m.recipientAddress, m.message, m.sender)
     inboundEnvelopePool.release(m)
   }
 
